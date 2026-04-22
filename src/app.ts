@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./config/env.js";
+import { registerPhase1Routes } from "./api/phase1.js";
 import { registerReportRoutes } from "./api/report.js";
 import { logger } from "./shared/logger.js";
 
@@ -11,6 +12,7 @@ async function buildApp() {
   });
 
   await registerReportRoutes(app);
+  await registerPhase1Routes(app);
   app.get("/healthz", async () => ({ ok: true }));
 
   const webRoot = path.resolve(process.cwd(), "src", "web");
