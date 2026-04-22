@@ -202,3 +202,52 @@ Invoke-RestMethod `
 - 图定义：`src/graph/reportGraph.ts`
 - Retrieval 读取：`src/services/retrievalClient.ts`
 - Schema：`src/schemas/index.ts`
+- 飞书 Phase1（云模板复制、读块、按节生成、写回）：`src/api/phase1.ts`、`src/phase1/pipeline.ts`、`src/integrations/feishu/`
+
+## 10. 飞书云文档报告（Phase1）— 同事复现
+
+目标：在飞书**自建**一篇带锚点的 docx 模板 + 目标文件夹，用服务端调 Open API **复制模板 → 按节调大模型 → 写回块**；与根目录 `cloudDoc` 云文档小组件**无强依赖**（小组件为后续「文档内二次编辑」预留）。
+
+### 10.1 环境（在百炼配置之外增加）
+
+在 `.env` 中配置（字段名见 `src/config/env.ts`）：
+
+- `FEISHU_APP_ID`、`FEISHU_APP_SECRET`
+- `FEISHU_TEMPLATE_FILE_TOKEN`：模板云文档 ID（与浏览器 `docx/` 后一致；需与 **drive copy** 所需 `file_token` 为同一资源，联调见下节探针）
+- `FEISHU_TARGET_FOLDER_TOKEN`：复制目标文件夹
+- 可选：`FEISHU_IM_NOTIFY_CHAT_ID` 或请求里带 `chatId`，用于生成后往会话发链接
+- 可选：`FEISHU_BASE_URL`（默认 `https://open.feishu.cn`）
+
+
+
+-重要：这个云文件夹和云文档需要你的应用有云文件权限（不一定），以及在你新建的文件夹中添加协作者为机器人所在的群聊并赋予修改权限。
+
+
+
+开放平台为应用开启云文档/云空间/发消息等所需权限，并保证应用对**模板与文件夹**有访问或协作权限。
+
+### 10.2 模板约定（第一版）
+
+在模板正文中为每一节放一行锚点，与 `src/phase1/sectionAnchors.ts` 中 `DEFAULT_SECTIONS` 一致，例如：
+
+- `[SECTION:EXEC_SUMMARY]`、`[SECTION:KEY_FINDINGS]`、`[SECTION:DATA_ANALYSIS]`、`[SECTION:RECOMMENDATIONS]`
+
+无锚点的官方模板需另配「标题/顺序映射」策略，见 `docs/PHASE1_MVP.md` 所链扩展思路（当前主线仍以锚点为准）。
+
+### 10.3 启动与联调
+
+```bash
+npm install
+npm run dev
+```
+
+1. 配置检查：`GET http://localhost:3000/api/phase1/config-check`
+2. **仅排查 token/权限（不跑 copy、不跑生成）**：`GET http://localhost:3000/api/phase1/debug-resource-check`；可选 `?deleteProbeDoc=true` 在目标目录创建探针 doc 后自动删除
+3. **整链生成**：`POST http://localhost:3000/api/phase1/mvp`  
+   - Body：`{ "userText": "你的需求描述", "chatId": "oc_xxx可选" }`
+
+成功响应含 `docUrl`、`filled` / `missingAnchors` 等。事件订阅 **challenge** 可配置：`POST /api/feishu/webhook`（事件解密需另迭代）。
+
+### 10.4 更完整的说明与 API 表
+
+见仓库内 `docs/PHASE1_MVP.md`。
