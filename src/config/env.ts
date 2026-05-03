@@ -21,6 +21,12 @@ const EnvSchema = z.object({
   FEISHU_COPY_NAME_PREFIX: z.string().default("AI报告-"),
   /** 选填：MVP 完成后通过机器人发回链接的目标会话（群 chat_id） */
   FEISHU_IM_NOTIFY_CHAT_ID: z.string().default(""),
+  /** Tool Gateway: 飞书官方 MCP endpoint（留空则自动走 fallback adapter） */
+  FEISHU_MCP_URL: z.string().default(""),
+  /** Tool Gateway: MCP 工具白名单，逗号分隔 */
+  FEISHU_MCP_ALLOWED_TOOLS: z.string().default(
+    "search-docs,fetch-doc,list-docs,get-file-content,create-doc,update-doc,get-comments,add-comment,search-users,get-user-info",
+  ),
 });
 
 export const env = EnvSchema.parse(process.env);

@@ -1,33 +1,63 @@
 import { END, START, StateGraph } from "@langchain/langgraph";
-import { analystNode } from "./nodes/analystNode.js";
-import { buildWriterInput } from "./nodes/buildWriterInput.js";
-import { formatOutput } from "./nodes/formatOutput.js";
-import { intentNode } from "./nodes/intentNode.js";
-import { parseUserRequest } from "./nodes/parseUserRequest.js";
-import { plannerNode } from "./nodes/plannerNode.js";
-import { retrieverNode } from "./nodes/retrieverNode.js";
-import { reviewerNode } from "./nodes/reviewerNode.js";
-import { writerNode } from "./nodes/writerNode.js";
-import { ReportGraphState } from "./state.js";
+import { analystAgentNode } from "./nodes/analystAgentNode.js";
+import { complianceReviewerNode } from "./nodes/complianceReviewerNode.js";
+import { intentAgentNode } from "./nodes/intentAgentNode.js";
+import { memoryUpdateNode } from "./nodes/memoryUpdateNode.js";
+import { outputGeneratorNode } from "./nodes/outputGeneratorNode.js";
+import { plannerAgentNode } from "./nodes/plannerAgentNode.js";
+import { requestGuardNode } from "./nodes/requestGuardNode.js";
+import { resourcePoolEnricherNode } from "./nodes/resourcePoolEnricherNode.js";
+import { resourceScreeningNode } from "./nodes/resourceScreeningNode.js";
+import { retrieverAgentNode } from "./nodes/retrieverAgentNode.js";
+import { skillRouterNode } from "./nodes/skillRouterNode.js";
+import { styleReviewerNode } from "./nodes/styleReviewerNode.js";
+import { writerAgentNode } from "./nodes/writerAgentNode.js";
+import { ReportGraphState, type ReportGraphStateType } from "./state.js";
+
+function routeAfterStyle(state: ReportGraphStateType): string {
+  if (state.callbackRoute === "to_writer") return "writer_agent";
+  return "compliance_reviewer";
+}
+
+function routeAfterCompliance(state: ReportGraphStateType): string {
+  if (state.callbackRoute === "to_planner") return "planner_agent";
+  if (state.callbackRoute === "to_analyst") return "analyst_agent";
+  return "output_generator";
+}
 
 export const reportGraph = new StateGraph(ReportGraphState)
-  .addNode("parse_user_request", parseUserRequest)
-  .addNode("intent_node", intentNode)
-  .addNode("planner_node", plannerNode)
-  .addNode("retriever_node", retrieverNode)
-  .addNode("analyst_node", analystNode)
-  .addNode("build_writer_input", buildWriterInput)
-  .addNode("writer_node", writerNode)
-  .addNode("reviewer_node", reviewerNode)
-  .addNode("format_output", formatOutput)
-  .addEdge(START, "parse_user_request")
-  .addEdge("parse_user_request", "intent_node")
-  .addEdge("intent_node", "planner_node")
-  .addEdge("planner_node", "retriever_node")
-  .addEdge("retriever_node", "analyst_node")
-  .addEdge("analyst_node", "build_writer_input")
-  .addEdge("build_writer_input", "writer_node")
-  .addEdge("writer_node", "reviewer_node")
-  .addEdge("reviewer_node", "format_output")
-  .addEdge("format_output", END)
+  .addNode("request_guard", requestGuardNode)
+  .addNode("resource_screening", resourceScreeningNode)
+  .addNode("intent_agent", intentAgentNode)
+  .addNode("skill_router", skillRouterNode)
+  .addNode("planner_agent", plannerAgentNode)
+  .addNode("retriever_agent", retrieverAgentNode)
+  .addNode("analyst_agent", analystAgentNode)
+  .addNode("writer_agent", writerAgentNode)
+  .addNode("style_reviewer", styleReviewerNode)
+  .addNode("compliance_reviewer", complianceReviewerNode)
+  .addNode("output_generator", outputGeneratorNode)
+  .addNode("memory_update", memoryUpdateNode)
+  .addNode("resource_pool_enricher", resourcePoolEnricherNode)
+  .addEdge(START, "request_guard")
+  .addEdge("request_guard", "resource_screening")
+  .addEdge("resource_screening", "intent_agent")
+  .addEdge("intent_agent", "skill_router")
+  .addEdge("skill_router", "planner_agent")
+  .addEdge("planner_agent", "retriever_agent")
+  .addEdge("retriever_agent", "analyst_agent")
+  .addEdge("analyst_agent", "writer_agent")
+  .addEdge("writer_agent", "style_reviewer")
+  .addConditionalEdges("style_reviewer", routeAfterStyle, {
+    writer_agent: "writer_agent",
+    compliance_reviewer: "compliance_reviewer",
+  })
+  .addConditionalEdges("compliance_reviewer", routeAfterCompliance, {
+    planner_agent: "planner_agent",
+    analyst_agent: "analyst_agent",
+    output_generator: "output_generator",
+  })
+  .addEdge("output_generator", "memory_update")
+  .addEdge("memory_update", "resource_pool_enricher")
+  .addEdge("resource_pool_enricher", END)
   .compile();

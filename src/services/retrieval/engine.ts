@@ -7,17 +7,20 @@ import { parseJsonFromMd, parseSkillDocFromMd, type SkillDoc } from "./mdParser.
 
 export class RetrievalEngine {
   private adapter = new FeishuMockAdapter();
-  private skillDocs: SkillDoc[];
+  private referenceSkillDocs: SkillDoc[];
+  private anchorSkillDocs: SkillDoc[];
   private memories: Record<string, RetrievalContext["userMemory"]>;
-  private readonly skillsRoot = path.resolve(process.cwd(), "SKILLS");
-  private readonly legacySkillsRoot = path.resolve(process.cwd(), "src", "skills");
+  private readonly referenceSkillsRoot = path.resolve(process.cwd(), "src", "skills");
+  private readonly anchorSkillsRoot = path.resolve(process.cwd(), "SKILLS");
 
   constructor() {
     try {
-      this.skillDocs = this.loadSkillDocs();
+      this.referenceSkillDocs = this.loadSkillDocs(this.referenceSkillsRoot);
+      this.anchorSkillDocs = this.loadSkillDocs(this.anchorSkillsRoot);
     } catch (error) {
-      console.warn("[RetrievalEngine] SKILLS 读取失败，使用空技能集", error);
-      this.skillDocs = [];
+      console.warn("[RetrievalEngine] 技能文件读取失败，使用空技能集", error);
+      this.referenceSkillDocs = [];
+      this.anchorSkillDocs = [];
     }
 
     try {
@@ -48,14 +51,8 @@ export class RetrievalEngine {
     return files;
   }
 
-  private listSkillFiles(): string[] {
-    const primary = this.collectSkillFiles(this.skillsRoot);
-    const legacy = this.collectSkillFiles(this.legacySkillsRoot);
-    return Array.from(new Set([...legacy, ...primary]));
-  }
-
-  private loadSkillDocs(): SkillDoc[] {
-    const files = this.listSkillFiles();
+  private loadSkillDocs(rootAbs: string): SkillDoc[] {
+    const files = this.collectSkillFiles(rootAbs);
     const docs: SkillDoc[] = [];
 
     for (const file of files) {
@@ -87,13 +84,16 @@ export class RetrievalEngine {
     };
   }
 
-  private pickBestSkillDoc(request: UserRequest): SkillDoc | null {
-    if (this.skillDocs.length === 0) return null;
+  private pickBestSkillDocFrom(
+    docs: SkillDoc[],
+    request: UserRequest,
+  ): SkillDoc | null {
+    if (docs.length === 0) return null;
 
     const reportType = (request.reportType ?? "").toLowerCase().trim();
     const industry = (request.industry ?? "").toLowerCase().trim();
 
-    const exact = this.skillDocs.find((doc) => {
+    const exact = docs.find((doc) => {
       return (
         doc.skill.reportType.toLowerCase() === reportType &&
         doc.skill.industry.toLowerCase() === industry
@@ -101,21 +101,42 @@ export class RetrievalEngine {
     });
     if (exact) return exact;
 
-    const reportMatched = this.skillDocs.find(
+    const reportMatched = docs.find(
       (doc) => doc.skill.reportType.toLowerCase() === reportType,
     );
     if (reportMatched) return reportMatched;
 
-    const industryMatched = this.skillDocs.find(
+    const industryMatched = docs.find(
       (doc) => doc.skill.industry.toLowerCase() === industry,
     );
     if (industryMatched) return industryMatched;
 
-    return this.skillDocs[0] ?? null;
+    return docs[0] ?? null;
+  }
+
+  private pickBestSkillDoc(request: UserRequest): {
+    doc: SkillDoc | null;
+    source: "reference" | "anchor" | "none";
+  } {
+    const referenceMatched = this.pickBestSkillDocFrom(
+      this.referenceSkillDocs,
+      request,
+    );
+    if (referenceMatched) {
+      return { doc: referenceMatched, source: "reference" };
+    }
+
+    const anchorMatched = this.pickBestSkillDocFrom(this.anchorSkillDocs, request);
+    if (anchorMatched) {
+      return { doc: anchorMatched, source: "anchor" };
+    }
+
+    return { doc: null, source: "none" };
   }
 
   async getContextForReport(request: UserRequest): Promise<RetrievalContext> {
-    const matchedSkillDoc = this.pickBestSkillDoc(request);
+    const matched = this.pickBestSkillDoc(request);
+    const matchedSkillDoc = matched.doc;
     const matchedSkill = matchedSkillDoc?.skill ?? this.buildFallbackSkill(request);
 
     const memoryData = this.memories[request.userId];
@@ -176,6 +197,7 @@ export class RetrievalEngine {
       glossary: matchedSkill.terminology,
       styleHints: [
         `SKILL_SOURCE: ${matchedSkillDoc?.sourcePath ?? "fallback"}`,
+        `SKILL_SOURCE_TYPE: ${matched.source}`,
         ...(matchedSkillDoc?.meta.description
           ? [`SKILL_DESC: ${matchedSkillDoc.meta.description}`]
           : []),

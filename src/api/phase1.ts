@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { assertFeishuMvpConfig, getFeishuMvpConfig } from "../integrations/feishu/feishuConfig.js";
+import {
+  buildFallbackGeneratedDocCard,
+  buildResolvedCard,
+} from "../integrations/feishu/cards.js";
+import { sendCardMessage, updateCardMessage } from "../integrations/feishu/imMessage.js";
 import { runResourceDebugCheck } from "../integrations/feishu/probes.js";
 import { handleBotMessageText } from "../phase1/botHandler.js";
 import { runPhase1Mvp } from "../phase1/pipeline.js";
@@ -27,6 +32,51 @@ const WebhookBodySchema = z
     event: z.unknown().optional(),
   })
   .passthrough();
+
+const CardCallbackBodySchema = z
+  .object({
+    challenge: z.string().optional(),
+    event: z
+      .object({
+        action: z
+          .object({
+            value: z.record(z.unknown()).optional(),
+          })
+          .optional(),
+        open_message_id: z.string().optional(),
+      })
+      .optional(),
+    open_message_id: z.string().optional(),
+  })
+  .passthrough();
+
+function parseMessageTextFromEvent(event: Record<string, unknown>): {
+  chatId?: string;
+  text?: string;
+} {
+  const message = event.message as Record<string, unknown> | undefined;
+  const chatId = typeof message?.chat_id === "string" ? message.chat_id : undefined;
+  const messageType =
+    typeof message?.message_type === "string" ? message.message_type : undefined;
+  const rawContent = typeof message?.content === "string" ? message.content : "";
+  if (!rawContent || !messageType) {
+    return { chatId, text: undefined };
+  }
+
+  try {
+    const parsed = JSON.parse(rawContent) as Record<string, unknown>;
+    const text = typeof parsed.text === "string" ? parsed.text : "";
+    return {
+      chatId,
+      text: text.trim(),
+    };
+  } catch {
+    return {
+      chatId,
+      text: undefined,
+    };
+  }
+}
 
 export async function registerPhase1Routes(app: FastifyInstance): Promise<void> {
   /**
@@ -96,10 +146,70 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
         message: "已收到加密事件，请在后续版本实现 decrypt（飞书 事件 2.0 文档）",
       });
     }
-    return reply.status(200).send({
-      message: "ok",
-      hint: "可在此处理明文事件；生产环境多使用加密包，需解析 event 后调用 handleBotMessageText",
-    });
+
+    const event = body.event;
+    if (!event || typeof event !== "object") {
+      return reply.status(200).send({ message: "ok" });
+    }
+    const messageInput = parseMessageTextFromEvent(event as Record<string, unknown>);
+    if (!messageInput.text || !messageInput.chatId) {
+      return reply.status(200).send({
+        message: "ok",
+        hint: "仅处理文本消息事件",
+      });
+    }
+
+    try {
+      const result = await handleBotMessageText({
+        userText: messageInput.text,
+        chatId: messageInput.chatId,
+      });
+      const c = getFeishuMvpConfig();
+      await sendCardMessage(c, {
+        receiveId: messageInput.chatId,
+        card: buildFallbackGeneratedDocCard({
+          title: result.copyName,
+          docUrl: result.docUrl,
+          sessionId: result.documentId,
+        }),
+      });
+    } catch (error) {
+      logger.error("webhook bot message handling failed", { error });
+    }
+    return reply.status(200).send({ message: "ok" });
+  });
+
+  app.post("/api/feishu/card-callback", async (request, reply) => {
+    const parsed = CardCallbackBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "invalid card callback" });
+    }
+    const body = parsed.data;
+    if (body.challenge) {
+      return reply.send({ challenge: body.challenge });
+    }
+
+    const messageId =
+      body.event?.open_message_id ?? body.open_message_id ?? "";
+    const action = body.event?.action?.value;
+    const actionName =
+      action && typeof action === "object" && typeof action.action === "string"
+        ? action.action
+        : "";
+    if (!messageId || actionName !== "mark_done") {
+      return reply.status(200).send({ message: "ok" });
+    }
+
+    try {
+      const c = getFeishuMvpConfig();
+      await updateCardMessage(c, {
+        messageId,
+        card: buildResolvedCard(),
+      });
+    } catch (error) {
+      logger.error("card callback update failed", { error });
+    }
+    return reply.status(200).send({ message: "ok" });
   });
 
   /**

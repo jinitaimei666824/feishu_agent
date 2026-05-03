@@ -1,0 +1,144 @@
+import { z } from "zod";
+import {
+  CandidateResourceListSchema,
+  type CandidateResourceList,
+  type ResourceSummary,
+} from "../../schemas/agentContracts.js";
+import type { UserRequest } from "../../schemas/index.js";
+import { invokeJsonModel } from "../../llm/jsonModel.js";
+import { toolGateway } from "../toolGateway/gateway.js";
+
+function scoreByRules(prompt: string, resource: ResourceSummary): number {
+  const lowerPrompt = prompt.toLowerCase();
+  const text = `${resource.title} ${resource.summary} ${resource.tags.join(" ")} ${resource.keywords.join(" ")}`.toLowerCase();
+  const hits = lowerPrompt
+    .split(/\s+/)
+    .filter((token) => token.length > 1)
+    .reduce((sum, token) => sum + (text.includes(token) ? 1 : 0), 0);
+  const normalized = Math.min(1, hits / 5);
+  return normalized;
+}
+
+const LlmScreeningSchema = z.object({
+  selectedResourceIds: z.array(z.string()).default([]),
+  reason: z.array(z.string()).default([]),
+});
+
+async function llmFallbackScreening(
+  request: UserRequest,
+  resourcePool: ResourceSummary[],
+): Promise<{ selectedResourceIds: string[]; reason: string[] }> {
+  const compact = resourcePool.slice(0, 20).map((r) => ({
+    resourceId: r.resourceId,
+    title: r.title,
+    summary: r.summary,
+    tags: r.tags,
+  }));
+
+  try {
+    const result = await invokeJsonModel(LlmScreeningSchema, {
+      systemPrompt: [
+        "你是 Resource Screening Agent。",
+        "请基于任务请求从资源摘要中选择最值得深读的资源ID列表。",
+        "只返回 JSON。",
+      ].join("\n"),
+      userPrompt: `request=${JSON.stringify(request)}\nresourcePool=${JSON.stringify(compact)}`,
+    });
+    return LlmScreeningSchema.parse(result);
+  } catch {
+    return { selectedResourceIds: [], reason: ["LLM fallback 失败，回退规则筛选"] };
+  }
+}
+
+function mapDocToResourceSummary(
+  doc: Awaited<ReturnType<typeof toolGateway.searchDocuments>>[number],
+): ResourceSummary {
+  return {
+    resourceId: `ext_doc_${doc.id}`,
+    resourceType: "doc_summary",
+    title: doc.title || doc.id,
+    summary: doc.summary ?? doc.content ?? "",
+    project: "外部文档",
+    tags: ["external", "mcp_or_openapi"],
+    keywords: `${doc.title} ${doc.summary ?? ""}`
+      .split(/[，。,\s]/)
+      .filter(Boolean)
+      .slice(0, 8),
+    updatedAt: new Date().toISOString(),
+    link: doc.url,
+    score: 0.32,
+  };
+}
+
+function mapUserToResourceSummary(
+  user: Awaited<ReturnType<typeof toolGateway.searchUsers>>[number],
+): ResourceSummary {
+  return {
+    resourceId: `ext_user_${user.id}`,
+    resourceType: "contact_summary",
+    title: user.name,
+    summary: `用户信息：${user.name} ${user.role ?? ""} ${user.department ?? ""}`.trim(),
+    project: "人员资源",
+    tags: ["external", "user"],
+    keywords: [user.name, user.role ?? "", user.department ?? ""].filter(Boolean),
+    updatedAt: new Date().toISOString(),
+    score: 0.3,
+  };
+}
+
+async function fetchExternalCandidates(query: string): Promise<ResourceSummary[]> {
+  const [docs, users] = await Promise.all([
+    toolGateway.searchDocuments(query),
+    toolGateway.searchUsers(query),
+  ]);
+
+  return [
+    ...docs.slice(0, 4).map(mapDocToResourceSummary),
+    ...users.slice(0, 3).map(mapUserToResourceSummary),
+  ];
+}
+
+export async function screenResources(input: {
+  request: UserRequest;
+  resourcePool: ResourceSummary[];
+}): Promise<CandidateResourceList> {
+  const scored = input.resourcePool
+    .map((resource) => ({
+      ...resource,
+      score: scoreByRules(input.request.prompt, resource),
+    }))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  const ruleCandidates = scored.filter((item) => (item.score ?? 0) >= 0.25).slice(0, 8);
+  const reasons = [`规则筛选命中=${ruleCandidates.length}`];
+
+  if (ruleCandidates.length >= 3) {
+    return CandidateResourceListSchema.parse({
+      candidates: ruleCandidates,
+      usedLlmFallback: false,
+      screeningReason: reasons,
+    });
+  }
+
+  const llm = await llmFallbackScreening(input.request, scored);
+  const llmSet = new Set(llm.selectedResourceIds);
+  const llmCandidates = scored.filter((resource) => llmSet.has(resource.resourceId)).slice(0, 8);
+  const mergedBase: ResourceSummary[] =
+    llmCandidates.length > 0 ? llmCandidates : scored.slice(0, 5);
+  let merged: ResourceSummary[] = mergedBase;
+  const screeningReason = [...reasons, ...llm.reason];
+
+  if (merged.length < 3) {
+    const external = await fetchExternalCandidates(input.request.prompt);
+    const existing = new Set(merged.map((item) => item.resourceId));
+    const supplements = external.filter((item) => !existing.has(item.resourceId));
+    merged = [...merged, ...supplements].slice(0, 8);
+    screeningReason.push(`外部工具补充候选=${supplements.length}`);
+  }
+
+  return CandidateResourceListSchema.parse({
+    candidates: merged,
+    usedLlmFallback: true,
+    screeningReason,
+  });
+}

@@ -4,6 +4,7 @@ import { UserRequestSchema } from "../schemas/index.js";
 import { runReportPipeline } from "../services/reportPipeline.js";
 import { generateReportDocxBuffer } from "../services/wordExport.js";
 import { GenerateReportResponseSchema } from "../types/contracts.js";
+import { runResourceGovernanceSync } from "../sync/resourceGovernance.js";
 
 export async function registerReportRoutes(app: FastifyInstance): Promise<void> {
   app.post("/generate-report", async (request, reply) => {
@@ -67,5 +68,9 @@ export async function registerReportRoutes(app: FastifyInstance): Promise<void> 
         { id: "u_cindy", name: "Cindy", role: "业务负责人" },
       ],
     };
+  });
+
+  app.post("/resource-pool/sync", async () => {
+    return runResourceGovernanceSync();
   });
 }

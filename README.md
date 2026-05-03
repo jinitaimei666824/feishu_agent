@@ -1,253 +1,209 @@
-# 飞书 AI Agent 办公报告生成 Prototype（后端）
+# 飞书办公 Agent 协同系统（Tool Gateway 版）
 
-本项目是一个基于 TypeScript + Fastify + LangGraph.js 的报告生成后端骨架，包含：
+本项目已从线性流程重构为多阶段 Agent 工作流，并新增 **Tool Gateway**：
 
-- API 入口：`POST /generate-report`
-- Word 导出：`POST /generate-report-docx`
-- LangGraph 主流程：`parse_user_request -> planner_node -> build_writer_input -> writer_node -> format_output`
-- Retrieval Client（本地 stub + Skill 文件加载）
-- 百炼模型调用封装（Orchestrator / Writer）
-- 全链路 Zod Schema 校验
+- 上层 Agent（Planner / Analyst / Writer / Reviewer / Memory）不变
+- 外部能力统一通过 Tool Gateway 调用
+- Tool Gateway 默认策略：**优先 MCP，失败自动回退 OpenAPI/SDK**
 
-## 1. 环境要求
+---
 
-- Node.js >= 20（建议 20/22）
-- npm >= 9
+## 1. 在线主流程（LangGraph）
 
-## 2. 安装依赖
+主流程由 `src/graph/reportGraph.ts` 执行：
 
-```bash
-npm install
-```
+1. `Request Guard`
+2. `Resource Screening`
+3. `Intent Agent`
+4. `Skill Router`
+5. `Planner Agent`
+6. `Retriever`
+7. `Analyst`
+8. `Writer`
+9. `Style Reviewer`
+10. `Compliance Reviewer`
+11. `Output Generator`
+12. `Memory Update`
+13. `Resource Pool Enricher`
 
-## 3. 配置环境变量
+### Callback 回环
 
-1. 复制 `.env.example` 为 `.env`
-2. 填写你的百炼配置（你已完成这一步可跳过）
+- 风格不通过 -> 回 `Writer`
+- 结构/缺失问题 -> 回 `Planner`
+- 数据/口径问题 -> 回 `Analyst`
 
-必填项：
+---
 
-- `BAILIAN_API_KEY`：已隐藏
+## 2. Tool Gateway 设计（本次重点）
+
+新增统一工具层：
+
+- `src/services/toolGateway/types.ts`
+- `src/services/toolGateway/feishuMcpAdapter.ts`
+- `src/services/toolGateway/feishuOpenApiAdapter.ts`
+- `src/services/toolGateway/gateway.ts`
+
+### 2.1 能力覆盖
+
+对外统一暴露：
+
+- 文档：`search/list/view/getFileContent/create/update`
+- 评论：`getComments/addComment`
+- 用户：`searchUsers/getUserInfo`
+
+### 2.2 路由策略
+
+每个工具调用遵循：
+
+1. 先调用 `FeishuMcpAdapter`
+2. 失败后自动调用 `FeishuOpenApiAdapter`
+
+上层模块不直接依赖 MCP/OpenAPI 细节。
+
+---
+
+## 3. 哪些模块已接入 Tool Gateway
+
+- `Resource Screening`
+  - 保留规则粗筛 + LLM 兜底
+  - 候选不足时通过 Gateway 补充文档/用户资源
+- `Retriever`
+  - 对候选资源深读时通过 Gateway 调用文档查看、文件内容、评论读取
+- `Output Generator`（经 `publisher`）
+  - 文档输出优先走 Gateway 的创建/更新/评论
+- `Resource Pool Manager`（轻度）
+  - 联系人信息可通过 Gateway 补充用户详情
+
+---
+
+## 4. 飞书事件接入（P1 / P2）
+
+### 4.1 Webhook 消息处理
+
+`src/api/phase1.ts` 已支持：
+
+- `POST /api/feishu/webhook`
+  - `url_verification` challenge
+  - 明文消息事件解析
+  - 触发 `handleBotMessageText(...)`
+  - 自动回发“生成文档”卡片
+
+> 当前加密事件体 `encrypt` 仍为占位提示，后续可补解密逻辑。
+
+### 4.2 卡片回调
+
+- `POST /api/feishu/card-callback`
+  - 支持卡片动作 `mark_done`
+  - 收到后更新原卡片为“已处理”
+
+---
+
+## 5. 资源池与记忆持久化
+
+- 资源池存储：`src/data/resource-pool.json`
+- 记忆存储：`src/data/runtime-memories.json`
+- 资源治理入口：`POST /resource-pool/sync`
+
+---
+
+## 6. 环境变量
+
+复制 `env.example` 为 `.env`，按下面配置。
+
+### 6.1 基础模型
+
+- `BAILIAN_API_KEY`
 - `BAILIAN_BASE_URL`
 - `BAILIAN_MODEL_ORCHESTRATOR`
 - `BAILIAN_MODEL_WRITER`
-模型不可用thinking！！
+- 可选：`BAILIAN_MODEL_EMBEDDING`
 
-.env设置如下：
-BAILIAN_API_KEY=
-BAILIAN_BASE_URL=
-BAILIAN_MODEL_ORCHESTRATOR=
-BAILIAN_MODEL_WRITER=
-BAILIAN_MODEL_EMBEDDING=
+### 6.2 飞书基础（Phase1 + fallback）
 
-可选项：
+- `FEISHU_BASE_URL`（默认 `https://open.feishu.cn`）
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_TEMPLATE_FILE_TOKEN`
+- `FEISHU_TARGET_FOLDER_TOKEN`
+- `FEISHU_COPY_NAME_PREFIX`
+- `FEISHU_IM_NOTIFY_CHAT_ID`（可选）
 
-- `PORT`（默认 `3000`）
-- `HOST`（默认 `0.0.0.0`）
-- `LLM_TIMEOUT_MS`（默认 `30000`，设置为 `0` 表示不限制超时）
+### 6.3 Tool Gateway MCP（可选但推荐）
 
-## 4. Skill 文件放置规范
+- `FEISHU_MCP_URL`
+  - 示例：`https://mcp.feishu.cn/mcp`
+  - 留空则直接走 fallback adapter
+- `FEISHU_MCP_ALLOWED_TOOLS`
+  - 逗号分隔工具白名单
 
-项目统一从根目录 `SKILLS/` 读取技能文件（单一技能库）。
+---
 
-每个 skill 使用 openclaw 风格 Markdown：
+## 7. API 一览
 
-- Front matter：`name`、`description` 等元信息
-- `## Guidance`：自然语言指导（会注入生成提示）
-- `## StructuredSkill`：` ```json ... ``` ` 结构化技能定义（按 `SkillSchema` 校验）
+- `POST /generate-report`：Agent 主流程生成
+- `POST /generate-report-docx`：导出 Word
+- `POST /resource-pool/sync`：手动资源治理同步
+- `POST /api/phase1/mvp`：Phase1 手动触发
+- `POST /api/phase1/bot-message`：机器人文本入口
+- `POST /api/feishu/webhook`：飞书事件回调
+- `POST /api/feishu/card-callback`：卡片动作回调
+- `GET /api/phase1/config-check`：飞书配置自检
+- `GET /api/phase1/debug-resource-check`：模板/目标目录可读写探针
+- `GET /healthz`：健康检查
 
-匹配逻辑：
+---
 
-1. 优先 `industry + reportType` 精确匹配
-2. 其次按 `reportType` 匹配
-3. 再按 `industry` 匹配
-4. 若仍未命中，回退到首个 skill 或内置 fallback（保证流程可运行）
-
-## 5. 启动项目
-
-开发模式（推荐）：
-
-```bash
-npm run dev
-```
-
-启动后可直接打开 GUI（飞书工作台风格）：
-
-- [http://localhost:3000/](http://localhost:3000/)
-- 页面支持：
-  - 结构化报告生成
-  - Word 报告导出
-  - 个人知识库 / 历史文档 / IM 联系人输入
-  - 自动展示 follow-up 追问建议
-
-生产模式：
-
-```bash
-npm run build
-npm run start
-```
-
-健康检查：
-
-```bash
-GET http://localhost:3000/healthz
-```
-
-## 6. 调用接口
-
-### 6.1 请求
-
-- URL：`POST http://localhost:3000/generate-report`
-- Header：`Content-Type: application/json`
-
-请求体示例：
-
-```json
-{
-  "userId": "u_001",
-  "sessionId": "s_001",
-  "prompt": "请生成本周医疗运营报告，重点关注门诊量变化和风险项。",
-  "industry": "医疗",
-  "reportType": "周报",
-  "extraContext": ["关注质量与合规", "给管理层阅读"],
-  "personalKnowledge": ["用户偏好先结论后细节"],
-  "historyDocs": ["上周风险项仍未闭环"],
-  "imContacts": [{ "id": "u_alice", "name": "Alice", "role": "项目经理" }]
-}
-```
-
-### 6.2 响应
-
-```json
-{
-  "selectedSkillId": "skill-medical-weekly-report",
-  "taskIntent": "weekly_report",
-  "followUpQuestions": ["请补充字段：统计周期（可通过 IM 联系人收集）"],
-  "reviewNotes": [],
-  "taskPlan": {
-    "reportType": "周报",
-    "selectedSkillId": "skill-medical-weekly-report",
-    "missingFields": [],
-    "targetSections": ["执行摘要", "核心指标表现"],
-    "targetTone": "专业、清晰",
-    "useSources": ["msg_001", "doc_101"]
-  },
-  "report": {
-    "title": "xxx",
-    "summary": "xxx",
-    "sections": [
-      {
-        "heading": "执行摘要",
-        "content": "..."
-      }
-    ],
-    "chartSuggestions": [
-      {
-        "type": "line",
-        "title": "门诊量趋势",
-        "purpose": "观察周期变化",
-        "dataHint": "按日门诊量"
-      }
-    ],
-    "openQuestions": []
-  },
-  "debugTrace": ["..."]
-}
-```
-
-### 6.3 Word 导出
-
-- URL：`POST http://localhost:3000/generate-report-docx`
-- 请求体与 `/generate-report` 相同
-- 响应为 `.docx` 文件流，可直接下载
-
-## 7. Windows PowerShell 调用示例
-
-```powershell
-$body = @{
-  userId = "u_001"
-  sessionId = "s_001"
-  prompt = "请生成本周医疗运营报告，重点关注门诊量变化和风险项。"
-  industry = "医疗"
-  reportType = "周报"
-  extraContext = @("关注质量与合规","给管理层阅读")
-} | ConvertTo-Json -Depth 10
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:3000/generate-report" `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-## 8. 常见问题排查
-
-- `LLM 调用失败: 4xx/5xx`  
-  检查 `BAILIAN_BASE_URL`、`BAILIAN_API_KEY`、模型名是否正确。
-
-- `请求参数或流程输出校验失败`  
-  检查请求体字段类型；以及 `SKILLS/*.md` 中 JSON 是否满足 `SkillSchema`。
-
-- `技能 markdown 中未找到 JSON 内容`  
-  确保 Skill 文件中存在 ` ```json ... ``` ` 代码块。
-
-- 启动成功但输出不理想  
-  优先优化 `SKILLS/*.md` 的 Guidance 与 StructuredSkill 内容。
-
-## 9. 关键源码入口
-
-- 应用入口：`src/app.ts`
-- 路由：`src/api/report.ts`
-- 流程入口函数：`src/services/reportPipeline.ts`（`generateReport`）
-- 图定义：`src/graph/reportGraph.ts`
-- Retrieval 读取：`src/services/retrievalClient.ts`
-- Schema：`src/schemas/index.ts`
-- 飞书 Phase1（云模板复制、读块、按节生成、写回）：`src/api/phase1.ts`、`src/phase1/pipeline.ts`、`src/integrations/feishu/`
-
-## 10. 飞书云文档报告（Phase1）— 同事复现
-
-目标：在飞书**自建**一篇带锚点的 docx 模板 + 目标文件夹，用服务端调 Open API **复制模板 → 按节调大模型 → 写回块**；与根目录 `cloudDoc` 云文档小组件**无强依赖**（小组件为后续「文档内二次编辑」预留）。
-
-### 10.1 环境（在百炼配置之外增加）
-
-在 `.env` 中配置（字段名见 `src/config/env.ts`）：
-
-- `FEISHU_APP_ID`、`FEISHU_APP_SECRET`
-- `FEISHU_TEMPLATE_FILE_TOKEN`：模板云文档 ID（与浏览器 `docx/` 后一致；需与 **drive copy** 所需 `file_token` 为同一资源，联调见下节探针）
-- `FEISHU_TARGET_FOLDER_TOKEN`：复制目标文件夹
-- 可选：`FEISHU_IM_NOTIFY_CHAT_ID` 或请求里带 `chatId`，用于生成后往会话发链接
-- 可选：`FEISHU_BASE_URL`（默认 `https://open.feishu.cn`）
-
-
-
--重要：这个云文件夹和云文档需要你的应用有云文件权限（不一定），以及在你新建的文件夹中添加协作者为机器人所在的群聊并赋予修改权限。
-
-
-
-开放平台为应用开启云文档/云空间/发消息等所需权限，并保证应用对**模板与文件夹**有访问或协作权限。
-
-### 10.2 模板约定（第一版）
-
-在模板正文中为每一节放一行锚点，与 `src/phase1/sectionAnchors.ts` 中 `DEFAULT_SECTIONS` 一致，例如：
-
-- `[SECTION:EXEC_SUMMARY]`、`[SECTION:KEY_FINDINGS]`、`[SECTION:DATA_ANALYSIS]`、`[SECTION:RECOMMENDATIONS]`
-
-无锚点的官方模板需另配「标题/顺序映射」策略，见 `docs/PHASE1_MVP.md` 所链扩展思路（当前主线仍以锚点为准）。
-
-### 10.3 启动与联调
+## 8. 本地启动
 
 ```bash
 npm install
 npm run dev
 ```
 
-1. 配置检查：`GET http://localhost:3000/api/phase1/config-check`
-2. **仅排查 token/权限（不跑 copy、不跑生成）**：`GET http://localhost:3000/api/phase1/debug-resource-check`；可选 `?deleteProbeDoc=true` 在目标目录创建探针 doc 后自动删除
-3. **整链生成**：`POST http://localhost:3000/api/phase1/mvp`  
-   - Body：`{ "userText": "你的需求描述", "chatId": "oc_xxx可选" }`
+类型检查：
 
-成功响应含 `docUrl`、`filled` / `missingAnchors` 等。事件订阅 **challenge** 可配置：`POST /api/feishu/webhook`（事件解密需另迭代）。
+```bash
+npm run check
+```
 
-### 10.4 更完整的说明与 API 表
+---
 
-见仓库内 `docs/PHASE1_MVP.md`。
+## 9. 飞书后台配置核对清单（刚需）
+
+在飞书开放平台逐项确认：
+
+1. 创建企业自建应用并获取 `App ID/App Secret`
+2. 开启机器人能力并允许加入群
+3. 配置事件订阅 URL：
+   - `https://<你的公网域名>/api/feishu/webhook`
+4. 订阅消息事件（如 `im.message.receive_v1`）
+5. 配置卡片回调 URL：
+   - `https://<你的公网域名>/api/feishu/card-callback`
+6. 开通所需权限（至少包括消息收发、docx 读写、drive 文件能力）
+7. 应用发布到可测试范围（企业成员/测试成员）
+
+---
+
+## 10. 联调顺序（推荐）
+
+1. `.env` 填完整
+2. `GET /api/phase1/config-check`
+3. `GET /api/phase1/debug-resource-check?deleteProbeDoc=true`
+4. `POST /api/phase1/mvp` 验证模板复制与写回
+5. 再用群里 `@机器人` 验证 webhook 触发
+6. 点击卡片按钮，验证 `card-callback` 更新
+
+---
+
+## 11. 关键代码入口
+
+- 主流程入口：`src/services/reportPipeline.ts`
+- LangGraph 图：`src/graph/reportGraph.ts`
+- Graph 状态：`src/graph/state.ts`
+- Agent contracts：`src/schemas/agentContracts.ts`
+- Tool Gateway：`src/services/toolGateway/*`
+- Resource Screening：`src/services/resourcePool/screening.ts`
+- Retriever 深读：`src/services/retrieval/deepRetriever.ts`
+- 输出发布：`src/services/output/publisher.ts`
+- 飞书路由：`src/api/phase1.ts`
+- 飞书 adapter：`src/integrations/feishu/*`
