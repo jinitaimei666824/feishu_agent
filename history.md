@@ -2,7 +2,10 @@
 
 ## 2026-05-04
 
-### 飞书事件 URL 显示 invalid
+### HEAD /api/feishu/webhook
+
+- **原因**：Vercel 日志出现 `HEAD /api/feishu/webhook` → 404；飞书或前置探测先 HEAD，无路由则影响保存/校验。
+- **处理**：对 `/api/feishu/webhook` 增加 **HEAD**，返回 **204**。
 
 - **原因**：事件 2.0 下 `url_verification` 多在 `header.event_type`，`challenge` 在 `event` 内且无 `event.type`；旧逻辑未识别，误回 `{ message: "ok" }`。
 - **处理**：扩展 `takeUrlVerificationChallenge`；可选环境变量 `FEISHU_VERIFICATION_TOKEN` 与后台一致时校验 token。

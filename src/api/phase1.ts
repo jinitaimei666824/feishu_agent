@@ -157,6 +157,11 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
    * 飞书开放平台「事件订阅」配置请求 URL 时的 challenge 验证。
    * 注意：im.message 等事件若开启加密，需在后续版本解密 `encrypt` 字段。
    */
+  /** 探测请求常见为 HEAD；若无路由会 404，易被判定为「地址不可用」 */
+  app.head("/api/feishu/webhook", async (_request, reply) => {
+    return reply.status(204).send();
+  });
+
   app.post("/api/feishu/webhook", async (request, reply) => {
     const verifyChallenge = takeUrlVerificationChallenge(request.body);
     if (verifyChallenge) {
