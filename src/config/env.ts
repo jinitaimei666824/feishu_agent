@@ -4,10 +4,14 @@ import { z } from "zod";
 dotenv.config();
 
 const EnvSchema = z.object({
-  BAILIAN_API_KEY: z.string().min(1, "BAILIAN_API_KEY 未配置"),
-  BAILIAN_BASE_URL: z.string().url("BAILIAN_BASE_URL 必须是 URL"),
-  BAILIAN_MODEL_ORCHESTRATOR: z.string().min(1),
-  BAILIAN_MODEL_WRITER: z.string().min(1),
+  /** 未配置时进程可启动；实际调用 LLM 时在 client 层报错 */
+  BAILIAN_API_KEY: z.string().default(""),
+  BAILIAN_BASE_URL: z
+    .string()
+    .url("BAILIAN_BASE_URL 必须是 URL")
+    .default("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+  BAILIAN_MODEL_ORCHESTRATOR: z.string().default("qwen2.5-vl-72b-instruct"),
+  BAILIAN_MODEL_WRITER: z.string().default("qwen2.5-7b-instruct"),
   BAILIAN_MODEL_EMBEDDING: z.string().min(1).optional(),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default("0.0.0.0"),
@@ -27,6 +31,17 @@ const EnvSchema = z.object({
   FEISHU_MCP_ALLOWED_TOOLS: z.string().default(
     "search-docs,fetch-doc,list-docs,get-file-content,create-doc,update-doc,get-comments,add-comment,search-users,get-user-info",
   ),
+  /**
+   * 飞书机器人 webhook（/api/feishu/webhook）收到 IM 文本后走哪条链路：
+   * - full：LangGraph 全链路 runReportPipeline，会话内分条回文字报告
+   * - phase1：复制云文档模板并按锚点填小节，回交互卡片链
+   */
+  FEISHU_BOT_PIPELINE: z.enum(["full", "phase1"]).default("full"),
+  /**
+   * 可写数据目录（runtime-memories.json、resource-pool.json）。
+   * 不设且 VERCEL=1 时默认 /tmp/feishu-agent-data；本地默认 src/data。
+   */
+  FEISHU_WRITABLE_DATA_DIR: z.string().optional(),
 });
 
 export const env = EnvSchema.parse(process.env);

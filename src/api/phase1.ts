@@ -1,12 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { env } from "../config/env.js";
 import { assertFeishuMvpConfig, getFeishuMvpConfig } from "../integrations/feishu/feishuConfig.js";
 import {
   buildFallbackGeneratedDocCard,
   buildResolvedCard,
 } from "../integrations/feishu/cards.js";
-import { sendCardMessage, updateCardMessage } from "../integrations/feishu/imMessage.js";
+import { sendCardMessage, sendTextMessage, updateCardMessage } from "../integrations/feishu/imMessage.js";
 import { runResourceDebugCheck } from "../integrations/feishu/probes.js";
+import { runFullPipelineAndNotifyChat } from "../integrations/feishu/reportImDelivery.js";
+import { parseFeishuImTextEvent } from "../integrations/feishu/webhookMessageParse.js";
 import { handleBotMessageText } from "../phase1/botHandler.js";
 import { runPhase1Mvp } from "../phase1/pipeline.js";
 import { logger } from "../shared/logger.js";
@@ -49,34 +52,6 @@ const CardCallbackBodySchema = z
     open_message_id: z.string().optional(),
   })
   .passthrough();
-
-function parseMessageTextFromEvent(event: Record<string, unknown>): {
-  chatId?: string;
-  text?: string;
-} {
-  const message = event.message as Record<string, unknown> | undefined;
-  const chatId = typeof message?.chat_id === "string" ? message.chat_id : undefined;
-  const messageType =
-    typeof message?.message_type === "string" ? message.message_type : undefined;
-  const rawContent = typeof message?.content === "string" ? message.content : "";
-  if (!rawContent || !messageType) {
-    return { chatId, text: undefined };
-  }
-
-  try {
-    const parsed = JSON.parse(rawContent) as Record<string, unknown>;
-    const text = typeof parsed.text === "string" ? parsed.text : "";
-    return {
-      chatId,
-      text: text.trim(),
-    };
-  } catch {
-    return {
-      chatId,
-      text: undefined,
-    };
-  }
-}
 
 export async function registerPhase1Routes(app: FastifyInstance): Promise<void> {
   /**
@@ -133,11 +108,11 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
    * 注意：im.message 等事件若开启加密，需在后续版本解密 `encrypt` 字段。
    */
   app.post("/api/feishu/webhook", async (request, reply) => {
-    const parsed = WebhookBodySchema.safeParse(request.body);
-    if (!parsed.success) {
+    const webhookParse = WebhookBodySchema.safeParse(request.body);
+    if (!webhookParse.success) {
       return reply.status(400).send({ message: "invalid body" });
     }
-    const body = parsed.data;
+    const body = webhookParse.data;
     if (body.type === "url_verification" && body.challenge) {
       return reply.send({ challenge: body.challenge });
     }
@@ -151,31 +126,70 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
     if (!event || typeof event !== "object") {
       return reply.status(200).send({ message: "ok" });
     }
-    const messageInput = parseMessageTextFromEvent(event as Record<string, unknown>);
-    if (!messageInput.text || !messageInput.chatId) {
+
+    const imEvent = parseFeishuImTextEvent(event as Record<string, unknown>);
+    if (!imEvent) {
       return reply.status(200).send({
         message: "ok",
-        hint: "仅处理文本消息事件",
+        hint: "忽略：非用户文本、或无法解析",
       });
     }
 
-    try {
-      const result = await handleBotMessageText({
-        userText: messageInput.text,
-        chatId: messageInput.chatId,
-      });
-      const c = getFeishuMvpConfig();
-      await sendCardMessage(c, {
-        receiveId: messageInput.chatId,
-        card: buildFallbackGeneratedDocCard({
-          title: result.copyName,
-          docUrl: result.docUrl,
-          sessionId: result.documentId,
-        }),
-      });
-    } catch (error) {
-      logger.error("webhook bot message handling failed", { error });
+    const c = getFeishuMvpConfig();
+    if (!c.appId || !c.appSecret) {
+      logger.error("webhook: 缺少 FEISHU_APP_ID / FEISHU_APP_SECRET");
+      return reply.status(200).send({ message: "ok" });
     }
+
+    /**
+     * 飞书要求回调尽快返回（约 3s），长链路在后台跑完后通过 IM 主动发消息。
+     */
+    if (env.FEISHU_BOT_PIPELINE === "phase1") {
+      void (async () => {
+        try {
+          assertFeishuMvpConfig();
+          const result = await handleBotMessageText({
+            userText: imEvent.text,
+            chatId: imEvent.chatId,
+          });
+          await sendCardMessage(c, {
+            receiveId: imEvent.chatId,
+            card: buildFallbackGeneratedDocCard({
+              title: result.copyName,
+              docUrl: result.docUrl,
+              sessionId: result.documentId,
+            }),
+          });
+        } catch (error) {
+          logger.error("webhook phase1 async failed", { error });
+          try {
+            await sendTextMessage(c, {
+              receiveId: imEvent.chatId,
+              text: `Phase1 生成失败：${error instanceof Error ? error.message : String(error)}`,
+            });
+          } catch (notifyErr) {
+            logger.error("webhook phase1 error notify failed", { error: notifyErr });
+          }
+        }
+      })();
+    } else {
+      void (async () => {
+        try {
+          await runFullPipelineAndNotifyChat(c, imEvent);
+        } catch (error) {
+          logger.error("webhook full pipeline async failed", { error });
+          try {
+            await sendTextMessage(c, {
+              receiveId: imEvent.chatId,
+              text: `报告生成失败：${error instanceof Error ? error.message : String(error)}`,
+            });
+          } catch (notifyErr) {
+            logger.error("webhook full pipeline error notify failed", { error: notifyErr });
+          }
+        }
+      })();
+    }
+
     return reply.status(200).send({ message: "ok" });
   });
 
