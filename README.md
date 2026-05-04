@@ -130,6 +130,7 @@
 - `FEISHU_IM_NOTIFY_CHAT_ID`（可选）
 - `FEISHU_BOT_PIPELINE`：`full`（默认，Webhook 走 LangGraph 全链路并发会话文字）或 `phase1`（云文档模板 + 卡片）
 - `FEISHU_WRITABLE_DATA_DIR`（可选）：记忆/资源池 JSON 的目录；Vercel 未设置时默认 `/tmp/feishu-agent-data`（避免只读盘）
+- `FEISHU_VERIFICATION_TOKEN`（可选）：与开放平台事件配置里的 **Verification Token** 一致；配置后 URL 校验请求会校验 token，避免误配后台时仍显示通过
 
 ### 6.3 Tool Gateway MCP（可选但推荐）
 

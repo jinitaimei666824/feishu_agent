@@ -42,6 +42,11 @@ const EnvSchema = z.object({
    * 不设且 VERCEL=1 时默认 /tmp/feishu-agent-data；本地默认 src/data。
    */
   FEISHU_WRITABLE_DATA_DIR: z.string().optional(),
+  /**
+   * 事件订阅「请求地址」校验时 body 里的 Verification Token；
+   * 与开放平台事件配置页一致时填上（也可不配，服务端不校验 token）。
+   */
+  FEISHU_VERIFICATION_TOKEN: z.string().optional(),
 });
 
 export const env = EnvSchema.parse(process.env);
