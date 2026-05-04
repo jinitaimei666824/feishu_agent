@@ -1,9 +1,8 @@
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { registerFeishuWebhookRoutes } from "./api/feishuWebhook.js";
 import { env } from "./config/env.js";
-import { registerPhase1Routes } from "./api/phase1.js";
-import { registerReportRoutes } from "./api/report.js";
 import { logger } from "./shared/logger.js";
 
 async function buildApp() {
@@ -11,8 +10,10 @@ async function buildApp() {
     logger: true,
   });
 
-  await registerReportRoutes(app);
-  await registerPhase1Routes(app);
+  /**
+   * 飞书 url_verification 约 3s 超时：必须先注册、且勿在静态 import 中拉取 phase1/report（会间接加载大量依赖拖慢冷启动）。
+   */
+  await registerFeishuWebhookRoutes(app);
   app.get("/healthz", async () => ({ ok: true }));
 
   const webRoot = path.resolve(process.cwd(), "src", "web");
@@ -40,6 +41,12 @@ async function start(): Promise<void> {
     const app = await buildApp();
     await app.listen({ host: env.HOST, port: env.PORT });
     logger.info("server started", { host: env.HOST, port: env.PORT });
+
+    const { registerReportRoutes } = await import("./api/report.js");
+    await registerReportRoutes(app);
+    const { registerPhase1Routes } = await import("./api/phase1.js");
+    await registerPhase1Routes(app);
+    logger.info("report + phase1 routes registered");
   } catch (error) {
     logger.error("server failed to start", {
       error: error instanceof Error ? error.message : String(error),
