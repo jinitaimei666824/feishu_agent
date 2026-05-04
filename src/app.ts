@@ -37,21 +37,41 @@ async function buildApp() {
 }
 
 async function start(): Promise<void> {
+  let app;
   try {
-    const app = await buildApp();
+    app = await buildApp();
     await app.listen({ host: env.HOST, port: env.PORT });
     logger.info("server started", { host: env.HOST, port: env.PORT });
-
-    const { registerReportRoutes } = await import("./api/report.js");
-    await registerReportRoutes(app);
-    const { registerPhase1Routes } = await import("./api/phase1.js");
-    await registerPhase1Routes(app);
-    logger.info("report + phase1 routes registered");
   } catch (error) {
-    logger.error("server failed to start", {
+    logger.error("server failed to start (webhook/UI 未监听)", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
+    return;
+  }
+
+  /**
+   * report / phase1 注册失败时绝不能 exit：否则进程退出后连已注册的 /api/feishu/webhook 也会挂掉，
+   * 表现成「飞书保存无事件日志、Vercel 无请求」。
+   */
+  try {
+    const { registerReportRoutes } = await import("./api/report.js");
+    await registerReportRoutes(app);
+    logger.info("report routes registered");
+  } catch (error) {
+    logger.error("registerReportRoutes 失败（webhook 仍可用）", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const { registerPhase1Routes } = await import("./api/phase1.js");
+    await registerPhase1Routes(app);
+    logger.info("phase1 routes registered");
+  } catch (error) {
+    logger.error("registerPhase1Routes 失败（webhook 仍可用）", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
