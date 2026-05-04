@@ -8,10 +8,7 @@ import {
 } from "../integrations/feishu/cards.js";
 import { sendCardMessage, sendTextMessage, updateCardMessage } from "../integrations/feishu/imMessage.js";
 import { runResourceDebugCheck } from "../integrations/feishu/probes.js";
-import { runFullPipelineAndNotifyChat } from "../integrations/feishu/reportImDelivery.js";
 import { parseFeishuImTextEvent } from "../integrations/feishu/webhookMessageParse.js";
-import { handleBotMessageText } from "../phase1/botHandler.js";
-import { runPhase1Mvp } from "../phase1/pipeline.js";
 import { logger } from "../shared/logger.js";
 
 const MvpBodySchema = z.object({
@@ -81,6 +78,7 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
   app.post("/api/phase1/mvp", async (request, reply) => {
     try {
       const body = MvpBodySchema.parse(request.body);
+      const { runPhase1Mvp } = await import("../phase1/pipeline.js");
       const result = await runPhase1Mvp({
         userText: body.userText,
         chatId: body.chatId,
@@ -104,6 +102,7 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
   app.post("/api/phase1/bot-message", async (request, reply) => {
     try {
       const body = MvpBodySchema.parse(request.body);
+      const { handleBotMessageText } = await import("../phase1/botHandler.js");
       const result = await handleBotMessageText({
         userText: body.userText,
         chatId: body.chatId,
@@ -170,6 +169,7 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
       void (async () => {
         try {
           assertFeishuMvpConfig();
+          const { handleBotMessageText } = await import("../phase1/botHandler.js");
           const result = await handleBotMessageText({
             userText: imEvent.text,
             chatId: imEvent.chatId,
@@ -197,6 +197,9 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
     } else {
       void (async () => {
         try {
+          const { runFullPipelineAndNotifyChat } = await import(
+            "../integrations/feishu/reportImDelivery.js"
+          );
           await runFullPipelineAndNotifyChat(c, imEvent);
         } catch (error) {
           logger.error("webhook full pipeline async failed", { error });
