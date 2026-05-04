@@ -53,6 +53,26 @@ const CardCallbackBodySchema = z
   })
   .passthrough();
 
+/**
+ * 事件订阅「请求地址」校验：飞书会 POST challenge，须在极短时间内原样返回。
+ * 兼容旧版顶层字段与新版 event 嵌套（schema 2.0 常见结构）。
+ */
+function takeUrlVerificationChallenge(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Record<string, unknown>;
+  if (b.type === "url_verification" && typeof b.challenge === "string" && b.challenge.length > 0) {
+    return b.challenge;
+  }
+  const ev = b.event;
+  if (ev && typeof ev === "object" && !Array.isArray(ev)) {
+    const e = ev as Record<string, unknown>;
+    if (e.type === "url_verification" && typeof e.challenge === "string" && e.challenge.length > 0) {
+      return e.challenge;
+    }
+  }
+  return null;
+}
+
 export async function registerPhase1Routes(app: FastifyInstance): Promise<void> {
   /**
    * 本地/联调：手动 POST 即跑通「复制 → 读块 → 按节生成 → 写回 → 可选发群」
@@ -108,14 +128,16 @@ export async function registerPhase1Routes(app: FastifyInstance): Promise<void> 
    * 注意：im.message 等事件若开启加密，需在后续版本解密 `encrypt` 字段。
    */
   app.post("/api/feishu/webhook", async (request, reply) => {
+    const verifyChallenge = takeUrlVerificationChallenge(request.body);
+    if (verifyChallenge) {
+      return reply.send({ challenge: verifyChallenge });
+    }
+
     const webhookParse = WebhookBodySchema.safeParse(request.body);
     if (!webhookParse.success) {
       return reply.status(400).send({ message: "invalid body" });
     }
     const body = webhookParse.data;
-    if (body.type === "url_verification" && body.challenge) {
-      return reply.send({ challenge: body.challenge });
-    }
     if (body.encrypt) {
       return reply.status(200).send({
         message: "已收到加密事件，请在后续版本实现 decrypt（飞书 事件 2.0 文档）",
