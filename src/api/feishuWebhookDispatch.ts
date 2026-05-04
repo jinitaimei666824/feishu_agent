@@ -31,12 +31,20 @@ export async function continueFeishuWebhookAfterChallenge(
 
   const imEvent = parseFeishuImTextEvent(event as Record<string, unknown>);
   if (!imEvent) {
+    logger.info("[feishu webhook] ignored event (not user text or bad shape)", {
+      eventKeys: Object.keys(event as object),
+    });
     await reply.status(200).send({
       message: "ok",
       hint: "忽略：非用户文本、或无法解析",
     });
     return;
   }
+
+  logger.info("[feishu webhook] im message", {
+    receiveType: imEvent.imReceiveIdType,
+    textPreview: imEvent.text.slice(0, 80),
+  });
 
   const c = getFeishuMvpConfig();
   if (!c.appId || !c.appSecret) {
@@ -55,7 +63,8 @@ export async function continueFeishuWebhookAfterChallenge(
           chatId: imEvent.chatId,
         });
         await sendCardMessage(c, {
-          receiveId: imEvent.chatId,
+          receiveId: imEvent.imReceiveId,
+          receiveIdType: imEvent.imReceiveIdType,
           card: buildFallbackGeneratedDocCard({
             title: result.copyName,
             docUrl: result.docUrl,
@@ -66,7 +75,8 @@ export async function continueFeishuWebhookAfterChallenge(
         logger.error("webhook phase1 async failed", { error });
         try {
           await sendTextMessage(c, {
-            receiveId: imEvent.chatId,
+            receiveId: imEvent.imReceiveId,
+            receiveIdType: imEvent.imReceiveIdType,
             text: `Phase1 生成失败：${error instanceof Error ? error.message : String(error)}`,
           });
         } catch (notifyErr) {
@@ -85,7 +95,8 @@ export async function continueFeishuWebhookAfterChallenge(
         logger.error("webhook full pipeline async failed", { error });
         try {
           await sendTextMessage(c, {
-            receiveId: imEvent.chatId,
+            receiveId: imEvent.imReceiveId,
+            receiveIdType: imEvent.imReceiveIdType,
             text: `报告生成失败：${error instanceof Error ? error.message : String(error)}`,
           });
         } catch (notifyErr) {

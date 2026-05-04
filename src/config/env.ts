@@ -47,6 +47,10 @@ const EnvSchema = z.object({
    * 与开放平台事件配置页一致时填上（也可不配，服务端不校验 token）。
    */
   FEISHU_VERIFICATION_TOKEN: z.string().optional(),
+  /**
+   * 事件订阅若开启「Encrypt Key」加密，须配置与开放平台一致的密钥，否则无法解析 IM 等事件。
+   */
+  FEISHU_ENCRYPT_KEY: z.string().optional(),
 });
 
 export const env = EnvSchema.parse(process.env);

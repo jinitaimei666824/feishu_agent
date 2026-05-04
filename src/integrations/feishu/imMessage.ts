@@ -16,13 +16,18 @@ type ImResponse = {
  */
 export async function sendTextMessage(
   c: FeishuMvpConfig,
-  options: { receiveId: string; text: string },
+  options: {
+    receiveId: string;
+    text: string;
+    receiveIdType?: "chat_id" | "open_id";
+  },
 ): Promise<{ messageId?: string }> {
   if (!options.receiveId) {
     throw new Error("IM receive_id 为空");
   }
   const access = await getTenantAccessToken(c);
-  const qs = new URLSearchParams({ receive_id_type: "chat_id" });
+  const idType = options.receiveIdType ?? "chat_id";
+  const qs = new URLSearchParams({ receive_id_type: idType });
   const url = `${c.baseUrl}/open-apis/im/v1/messages?${qs.toString()}`;
   const res = await fetch(url, {
     method: "POST",
@@ -48,13 +53,18 @@ export async function sendTextMessage(
 
 export async function sendCardMessage(
   c: FeishuMvpConfig,
-  options: { receiveId: string; card: Record<string, unknown> },
+  options: {
+    receiveId: string;
+    card: Record<string, unknown>;
+    receiveIdType?: "chat_id" | "open_id";
+  },
 ): Promise<{ messageId?: string }> {
   if (!options.receiveId) {
     throw new Error("IM receive_id 为空");
   }
   const access = await getTenantAccessToken(c);
-  const qs = new URLSearchParams({ receive_id_type: "chat_id" });
+  const idType = options.receiveIdType ?? "chat_id";
+  const qs = new URLSearchParams({ receive_id_type: idType });
   const url = `${c.baseUrl}/open-apis/im/v1/messages?${qs.toString()}`;
   const res = await fetch(url, {
     method: "POST",

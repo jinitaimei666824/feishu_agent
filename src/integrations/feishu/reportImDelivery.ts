@@ -73,7 +73,8 @@ export async function runFullPipelineAndNotifyChat(
 ): Promise<void> {
   const userRequest = feishuImEventToUserRequest(parsed);
   await sendTextMessage(c, {
-    receiveId: parsed.chatId,
+    receiveId: parsed.imReceiveId,
+    receiveIdType: parsed.imReceiveIdType,
     text: "已收到需求，正在全链路生成报告（Intent→Skill→Planner→…），请稍候…",
   });
 
@@ -84,7 +85,11 @@ export async function runFullPipelineAndNotifyChat(
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     try {
-      await sendTextMessage(c, { receiveId: parsed.chatId, text: chunk });
+      await sendTextMessage(c, {
+        receiveId: parsed.imReceiveId,
+        receiveIdType: parsed.imReceiveIdType,
+        text: chunk,
+      });
     } catch (e) {
       logger.error("飞书 分片发报告失败", { index: i, error: e });
       throw e;
